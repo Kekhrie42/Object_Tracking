@@ -12,7 +12,10 @@ def main():
 
 
 '''
-Function that adds id into the data frame.
+Function that adds id into the data frame
+only if the score is above 0.35 and the class of the 
+field is not a tube_tip
+
 df: Original Data frame
 '''
 def add_id_to_grain(df):
