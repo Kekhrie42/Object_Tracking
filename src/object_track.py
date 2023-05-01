@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np 
 from pollenClass import pollenGrain
+from pollenClass import tubeTip
 from copy import deepcopy
 import matplotlib.pyplot as plt
 from PIL import Image
@@ -9,15 +10,17 @@ import subprocess
 import cv2
 import re
 from decimal import Decimal
+import math
+import itertools
 
 
 ## Author: Kekhrie Tsurho
 ## Description: 
 
-
-
 #----------------------Gloabal variables-------------------#
-arrayOfPollens = []
+arrayOfPollens = [] #array of pollenGrain objects
+arrayOfTubeTips = [] #array of tubeTip objects
+# distances = {} #dictionary of distances between pollenGrains and tubeTips
 #----------------------Functions----------------------------#
 
 def add_id_to_grain(df):
@@ -29,145 +32,217 @@ def add_id_to_grain(df):
     return df
 
 def add_centroid(df):
-    df["centroid_x"] = round(df.apply(lambda row: (row["xmin"] + row["xmax"]) / 2, axis=1),15)
-    df["centroid_y"] = round(df.apply(lambda row: (row["ymin"] + row["ymax"]) / 2, axis=1),15)
-    print(df["centroid_x"])
-    print(df["centroid_y"])
+    df["centroid_x"] = round(df.apply(lambda row: (row["xmin"] + row["xmax"]) / 2, axis=1),200)
+    df["centroid_y"] = round(df.apply(lambda row: (row["ymin"] + row["ymax"]) / 2, axis=1),200)
     return df
 
+
 def add_to_array(df):
-    MAX_DISTANCE = 0.1
-    # Case 1: creating new pollen grains at timepoint 0
+    # Creating a list of pollenGrain objects
+    pid = 0
+    ##TODO: Add case for when new pollen is added.
     for index, row in df.iterrows():
-        if row['timepoint'] == 0 and row['score'] >= 0.35:
-            pollen = pollenGrain()
+        if(row['timepoint'] == 0 and row['score'] >= 0.35 and row['class'] != 'tube_tip'):
+            pollen = pollenGrain(pid)
+            pid+=1
             pollen.add_position(row['centroid_x'], row['centroid_y'], row['timepoint'])
             pollen.add_class(row['class'], row['timepoint'])       
             arrayOfPollens.append(pollen)
             df.drop(index, inplace=True)
-    
-    # Case 2: updating existing pollen grains and creating new ones at subsequent timepoints
+
+        elif(row['timepoint'] == 0 and row['score'] >= 0.35 and row['class'] == 'tube_tip'):
+            tube_tip = tubeTip(pid)
+            pid+=1
+            tube_tip.add_position(row['centroid_x'], row['centroid_y'], row['timepoint'])
+            tube_tip.add_class(row['class'], row['timepoint'])       
+            arrayOfTubeTips.append(tube_tip)
+            df.drop(index, inplace=True)
+
+        
+    ##Second case when pollen is already in the array. 
     for t in range(1, max(df['timepoint'])+1):
         # Get the rows corresponding to the current timepoint
         df_t = df[df['timepoint'] == t]
-        
-        # Get the positions and classes of all pollen grains at the latest timepoint
-        latest_positions = {}
-        latest_classes = {}
-        for pollen in arrayOfPollens:
-            latest_positions[pollen] = list(pollen.get_position().values())[-1]
-            latest_classes[pollen] = list(pollen.get_class().values())[-1]
 
-        # Update positions and classes of existing pollen grains and create new ones
+        # Get the positions of all pollens at the latest timepoint
+        pollens = np.array([list(pollen.get_position().values())[-1] for pollen in arrayOfPollens])
+        tubes = np.array([list(tube.get_position().values())[-1] for tube in arrayOfTubeTips])
+
         for index, row in df_t.iterrows():
-            if row['class'] != 'tube_tip' and row['score'] >= 0.35:
-                # Calculate distances between pollen grains and the current centroid
-                distances = np.linalg.norm(np.array(list(latest_positions.values())) - np.array([row['centroid_x'], row['centroid_y']]), axis=1)
-                
-                # Find the index of the closest pollen grain
+            if(row['class'] != 'tube_tip' and row['score'] >= 0.35):
+                # Calculate distances between pollens and the current centroid
+                distances = np.linalg.norm(pollens - np.array([row['centroid_x'], row['centroid_y']]), axis=1)
+
+                # Find the index of the closest pollen and update its position
                 min_index = np.argmin(distances)
-                min_distance = distances[min_index]
-                
-                # Check if the closest pollen grain is close enough
-                if min_distance < MAX_DISTANCE:
-                    closest_pollen = list(latest_positions.keys())[min_index]
-                    closest_pollen.add_position(row['centroid_x'], row['centroid_y'], t)
-                    closest_pollen.add_class(row['class'], t)
-                else: # Create a new pollen grain if the closest pollen grain is too far away
-                    new_pollen = pollenGrain()
+
+                # Add new pollen object if the closest one is too far away
+                if distances[min_index] > 0.01:
+                    new_pollen = pollenGrain(pid)
+                    pid += 1
                     new_pollen.add_position(row['centroid_x'], row['centroid_y'], t)
                     new_pollen.add_class(row['class'], t)
                     arrayOfPollens.append(new_pollen)
-        
+                else:
+                    arrayOfPollens[min_index].add_position(row['centroid_x'], row['centroid_y'], t) #adding position to pollen
+                    arrayOfPollens[min_index].add_class(row['class'], t) #adding class to pollene
                 df.drop(index, inplace=True)
 
-# def visualize():
-#     # Get the timepoints from the first pollen object
-#     timepoints = list(arrayOfPollens[0].get_position().keys())   
+            elif(row['class'] == 'tube_tip' and row['score'] >= 0.35):
+                # Calculate distances between pollens and the current centroid
+                distances = np.linalg.norm(tubes - np.array([row['centroid_x'], row['centroid_y']]), axis=1)
 
-#     # Create a scatter plot for each timepoint
-#     for t in timepoints:
-#         # Initialize the x and y coordinate lists for this timepoint
-#         x_coords = []
-#         y_coords = []
+                # Find the index of the closest pollen and update its position
+                min_index = np.argmin(distances)
 
-#         # Collect the x and y coordinates for each arrayOfPollens object at this timepoint
-#         for p in arrayOfPollens:
-#             if t in p.get_position():
-#                 x, y = p.get_position()[t]
-#                 x_coords.append(x)
-#                 y_coords.append(y)
-
-#         # Create a scatter plot for this timepoint
-#         plt.gca().invert_yaxis()
-#         plt.scatter(x_coords, y_coords)
-#         plt.title(f'Timepoint {t}')
-#         plt.savefig(f'timepoint_{t}.png')
-#         plt.show()
+                # Add new pollen object if the closest one is too far away
+                if distances[min_index] > 0.01:
+                    new_tube_tip = tubeTip(pid)
+                    pid += 1
+                    new_tube_tip.add_position(row['centroid_x'], row['centroid_y'], t)
+                    new_tube_tip.add_class(row['class'], t)
+                    arrayOfTubeTips.append(new_tube_tip)
+                else:
+                    arrayOfTubeTips[min_index].add_position(row['centroid_x'], row['centroid_y'], t) #adding position to pollen
+                    arrayOfTubeTips[min_index].add_class(row['class'], t) #adding class to pollene
+                df.drop(index, inplace=True)
 
 
 
-def visualize(image_path):
+def calculate_distances():
+    """
+    Calculates the closest distances between each pollen and its corresponding tube tip
+    and stores the results in a dictionary.
+
+    Parameters:
+    arrayOfTubeTips (list): List of tube tip objects with position fields as dictionaries
+    where the keys are timepoints and the values are tuples of x,y positions.
+    arrayOfPollens (list): List of pollen objects with position fields as dictionaries
+    where the keys are timepoints and the values are tuples of x,y positions.
+
+    Returns:
+    distances (dict): A dictionary where the keys are tuples of the ids of the tube tips and
+    pollens and the values are dictionaries where the keys are the timepoints they both exist
+    and the values are the closest distances between them.
+    """
+    distances = {}
+
+    # Loop through each tube tip
+    for tube_tip in arrayOfTubeTips:
+        tube_tip_id = tube_tip.get_id()
+
+        # Get the positions of the tube tip at all timepoints it exists
+        tube_tip_positions = tube_tip.get_position()
+
+        # Loop through each pollen object and find the closest distance between
+        # the pollen and the tube tip at each timepoint they both exist
+        for pollen in arrayOfPollens:
+            pollen_id = pollen.get_id()
+
+            # Skip pollen objects that do not exist at the same timepoints as the tube tip
+            if not set(tube_tip_positions.keys()).intersection(set(pollen.get_position().keys())):
+                continue
+
+            # Find the closest distance between the pollen and the tube tip at each timepoint they both exist
+            closest_distance = None
+            for timepoint in set(tube_tip_positions.keys()).intersection(set(pollen.get_position().keys())):
+                # Get the positions of the pollen and tube tip at the current timepoint
+                pollen_position = pollen.get_position()[timepoint]
+                tube_tip_position = tube_tip_positions[timepoint]
+
+                # Calculate the Euclidean distance between the pollen and tube tip at the current timepoint
+                distance = np.linalg.norm(np.array(pollen_position) - np.array(tube_tip_position))
+
+                # Update the closest distance if it is None or smaller than the current closest distance
+                if closest_distance is None or distance < closest_distance:
+                    closest_distance = distance
+
+            # Add the closest distance to the dictionary of distances
+            key = (tube_tip_id, pollen_id)
+            if key not in distances:
+                distances[key] = {}
+            distances[key].update({timepoint: closest_distance})
+
+    return distances
+
+
+
+def visualize(image_path, dir):
     # Get the timepoints from the first pollen object
-    timepoints = list(arrayOfPollens[0].get_position().keys())   
+    timepoints = list(arrayOfPollens[0].get_position().keys())
 
-    # Loop through all files in the directory
-    for filename in os.listdir(image_path):
-        # Check if file is a PNG image
-        if filename.endswith(".jpg"):
-            file = os.path.join(image_path, filename)
-            image = Image.open(file)
+    # Generate a list of colors for each pollen object
+    pollen_colors = {}
+    for p in arrayOfPollens:
+        pollen_id = p.get_id()
+        pollen_colors[pollen_id] = np.random.rand(3,)
 
-            # Get the x and y dimensions of the image
-            x_dim, y_dim = image.size
+    # Get all the image filenames in the directory and sort them by timepoint
+    filenames = sorted([f for f in os.listdir(image_path) if f.endswith('.jpg')], key=lambda x: int(re.findall(r"_t(\d{3})_", x)[0]))
 
-            # Get the timepoint from the filename using regex
-            t = int(re.findall(r"_t(\d{3})_", filename)[0])
+    # Loop through all the timepoints and overlay the pollen positions onto the corresponding image
+    for t in timepoints:
+        # Initialize the x and y coordinate lists and color list for this timepoint
+        x_coords = []
+        y_coords = []
+        colors = []
 
-            # Initialize the x and y coordinate lists for this timepoint
-            x_coords = []
-            y_coords = []
+        # Collect the x and y coordinates and colors for each pollen object at this timepoint
+        for p in arrayOfPollens:
+            if t in p.get_position():
+                x, y = p.get_position()[t]
 
-            # Collect the x and y coordinates for each arrayOfPollens object at this timepoint
-            for p in arrayOfPollens:
-                if t in p.get_position():
-                    x, y = p.get_position()[t]
+                # Adjust the coordinates to fit the image dimensions
+                x = Decimal(x * 2048)
+                y = Decimal(y * 2048)
+                
+                x_coords.append(x)
+                y_coords.append(y)
+                colors.append(pollen_colors[p.get_id()])
 
-                    # Adjust the coordinates to fit the image dimensions
-                    # print(x)
-                    x = Decimal(x * 2000)
-                    y = Decimal(y * 2000)
-                    
-                    x_coords.append(x)
-                    y_coords.append(y)
+        for tubes in arrayOfTubeTips:
+            if t in tubes.get_position():
+                x, y = tubes.get_position()[t]
 
-            # Overlay the pollen positions onto the image
-            print(x_coords)
-            plt.imshow(image)
-            plt.scatter(x_coords, y_coords, c='r', marker='.')
-            plt.title(f'Timepoint {t}')
-            plt.savefig(f'timepoint_{t}.png')
-            plt.show()
+                # Adjust the coordinates to fit the image dimensions
+                x = Decimal(x * 2048)
+                y = Decimal(y * 2048)
+                
+                x_coords.append(x)
+                y_coords.append(y)
+                colors.append(pollen_colors[p.get_id()])
 
+        # Load the corresponding image and plot the pollen positions
+        image_filename = [f for f in filenames if f"_t{t:03d}_" in f]
+        if not image_filename:
+            continue  # Skip this timepoint if the corresponding image is not found
+
+        image_filepath = os.path.join(image_path, image_filename[0])
+        image = Image.open(image_filepath)
+        plt.imshow(image)
+        plt.scatter(x_coords, y_coords, c=colors, marker='.')
+        plt.title(f'Timepoint {t}')
+        plt.savefig(f'timepoint_{t}.png')
+        plt.show()
 
 
 def main():
-
     df = pd.read_table("test.tsv")
 
     df['ID'] = "None" #Initializing all ID's to None
     df = add_id_to_grain(df) #Adding ID's to grains
 
-    #Getting rows and columsn from data frame
-    num_rows, num_cols = df.shape
-
     add_centroid(df) #adding centroid to data frame
     add_to_array(df) #adding grains to array
 
-    path = os.getcwd() + "/2022-01-05_run1_26C_D2"
-    visualize(path) #Visualizing
-    
+    dir = "/2022-01-05_run1_26C_D2" #Directory of images
+    path = os.getcwd() + dir
 
+    distances = calculate_distances()
+
+    visualize(path, dir) #Visualizing
+    
+    
     df.to_csv('example.tsv', sep="\t")
 
 if __name__ == "__main__":
